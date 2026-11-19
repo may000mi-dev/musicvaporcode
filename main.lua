@@ -361,7 +361,7 @@ refresh_saved = function()
 end
 
 local function global_index(slot)
-  local item = state.saved_items[slot]
+  local item = state.saved_items[(state.saved_page - 1) * 5 + slot]
   return item and item.index
 end
 
