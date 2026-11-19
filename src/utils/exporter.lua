@@ -135,7 +135,7 @@ local function write_real(contents)
   end)
 end
 
-local function write_data(data)
+local function build_contents(data)
   local lines = {
     "-- Configuraciones guardadas en MusicVaporCode.",
     "-- Cada entrada reproduce el mismo resultado en el sandbox.",
@@ -147,7 +147,11 @@ local function write_data(data)
   end
   lines[#lines + 1] = "}"
 
-  local contents = table.concat(lines, "\n")
+  return table.concat(lines, "\n")
+end
+
+local function write_data(data)
+  local contents = build_contents(data)
   love.filesystem.createDirectory("exports")
   local written, err = love.filesystem.write(PATH, contents)
   -- En Termux el proyecto es writable: espejo para sobrevivir a rebuilds.
@@ -211,6 +215,19 @@ function Exporter.copy_entry(entry)
   end
   return pcall(love.system.setClipboardText,
     "-- Configuración guardada en MusicVaporCode.\n" .. format_entry(entry))
+end
+
+function Exporter.copy_all()
+  if not love.system or not love.system.setClipboardText then
+    return false, "portapapeles no disponible"
+  end
+
+  local data = Exporter.load()
+  if #data == 0 then
+    return false, "no hay configuraciones guardadas"
+  end
+
+  return pcall(love.system.setClipboardText, build_contents(data))
 end
 
 function Exporter.delete_entry(index)

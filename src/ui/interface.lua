@@ -63,6 +63,7 @@ function UI.load()
   end
   add_button("saved", "page_prev", 42, 404, 120, 44)
   add_button("saved", "page_next", 170, 404, 120, 44)
+  add_button("saved", "export_all", 500, 8, 150, 44)
   add_button("saved", "import", 660, 8, 130, 44)
   add_button("saved", "volver", 800, 8, 130, 44)
 
@@ -171,6 +172,7 @@ local function draw_saved(state)
   love.graphics.setColor(0.65, 0.72, 0.78)
   love.graphics.print("CARGAR usa la configuración · EXPORTAR copia al portapapeles · BORRAR la quita.", 30, 42)
 
+  draw_button(by_id.export_all, "EXPORTAR TODO", { 0.30, 0.80, 0.90 }, true)
   draw_button(by_id.import, "IMPORTAR", { 0.95, 0.60, 0.25 }, true)
   draw_button(by_id.volver, "VOLVER", { 0.90, 0.40, 0.35 }, true)
   draw_panel(30, 84, 900, 408)

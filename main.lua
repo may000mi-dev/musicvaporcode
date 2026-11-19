@@ -376,6 +376,10 @@ local function handle_action(action)
     confirm_import()
   elseif action == "import_cancel" then
     close_import()
+  elseif action == "export_all" then
+    local ok, err = Exporter.copy_all()
+    state.status = ok and ("Copiados todos los guardados (" .. #state.saved_entries .. ").") or
+      ("No se pudo copiar: " .. tostring(err))
   elseif action == "volver" then
     close_saved()
   elseif action == "page_prev" then
