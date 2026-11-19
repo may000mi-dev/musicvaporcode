@@ -184,6 +184,7 @@ local function export_seed()
   })
 
   state.exported_count = count
+  state.saved_entries = Exporter.load()
   if written then
     state.status = "Guardada (" .. count .. ") en exports/seeds.lua · también en portapapeles"
   else
@@ -402,7 +403,8 @@ local function handle_action(action)
 end
 
 function love.load()
-  state.exported_count = #Exporter.load()
+  state.saved_entries = Exporter.load()
+  state.exported_count = #state.saved_entries
   Screen.update()
   UI.load()
   refresh(false)

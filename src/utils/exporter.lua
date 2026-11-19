@@ -1,6 +1,7 @@
 local Exporter = {}
 
 local PATH = "exports/seeds.lua"
+local load_chunk = loadstring or load
 
 local function quote(value)
   local text = tostring(value)
@@ -91,6 +92,49 @@ local function format_entry(item)
   )
 end
 
+local function load_real()
+  if not io or not io.open then
+    return nil
+  end
+
+  local ok, data = pcall(function()
+    local file = io.open(PATH, "r")
+    if not file then
+      return nil
+    end
+    local contents = file:read("*a")
+    file:close()
+    local chunk = load_chunk(contents, PATH)
+    if not chunk then
+      return nil
+    end
+    return chunk()
+  end)
+
+  if ok and type(data) == "table" then
+    return data
+  end
+  return nil
+end
+
+local function write_real(contents)
+  if not io or not io.open then
+    return false
+  end
+
+  return pcall(function()
+    if os and os.execute then
+      pcall(os.execute, "mkdir -p exports")
+    end
+    local file = io.open(PATH, "w")
+    if not file then
+      error("no se pudo abrir " .. PATH)
+    end
+    file:write(contents)
+    file:close()
+  end)
+end
+
 local function write_data(data)
   local lines = {
     "-- Configuraciones guardadas en MusicVaporCode.",
@@ -106,6 +150,11 @@ local function write_data(data)
   local contents = table.concat(lines, "\n")
   love.filesystem.createDirectory("exports")
   local written, err = love.filesystem.write(PATH, contents)
+  -- En Termux el proyecto es writable: espejo para sobrevivir a rebuilds.
+  local mirrored = write_real(contents)
+  if not written and mirrored then
+    written, err = true, nil
+  end
   return written, love.filesystem.getSaveDirectory() .. "/" .. PATH, err, #data, contents
 end
 
@@ -121,15 +170,14 @@ end
 
 function Exporter.load()
   local ok, chunk = pcall(love.filesystem.load, PATH)
-  if not ok or not chunk then
-    return {}
+  if ok and chunk then
+    local loaded, data = pcall(chunk)
+    if loaded and type(data) == "table" and #data > 0 then
+      return data
+    end
   end
 
-  local loaded, data = pcall(chunk)
-  if not loaded or type(data) ~= "table" then
-    return {}
-  end
-  return data
+  return load_real() or {}
 end
 
 function Exporter.add(entry)
