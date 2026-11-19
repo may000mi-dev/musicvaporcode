@@ -57,12 +57,18 @@ function UI.load()
 
   for index = 1, 5 do
     local y = 100 + (index - 1) * 60
+    add_button("saved", "list_toggle_" .. index, 42, y, 52, 52)
+    add_button("saved", "list_stop_" .. index, 100, y, 52, 52)
     add_button("saved", "load_" .. index, 460, y, 110, 52)
     add_button("saved", "copy_" .. index, 578, y, 140, 52)
     add_button("saved", "delete_" .. index, 726, y, 120, 52)
   end
   add_button("saved", "page_prev", 42, 404, 120, 44)
   add_button("saved", "page_next", 170, 404, 120, 44)
+  add_button("saved", "list_prev", 300, 404, 80, 44)
+  add_button("saved", "list_play_all", 388, 404, 140, 44)
+  add_button("saved", "list_stop_all", 536, 404, 100, 44)
+  add_button("saved", "list_next", 644, 404, 80, 44)
   add_button("saved", "export_all", 500, 8, 150, 44)
   add_button("saved", "import", 660, 8, 130, 44)
   add_button("saved", "volver", 800, 8, 130, 44)
@@ -170,7 +176,7 @@ local function draw_saved(state)
 
   love.graphics.setFont(fonts.small)
   love.graphics.setColor(0.65, 0.72, 0.78)
-  love.graphics.print("CARGAR usa la configuración · EXPORTAR copia al portapapeles · BORRAR la quita.", 30, 42)
+  love.graphics.print("PLAY/PAUSA y STOP a la izquierda · CARGAR usa la configuración · EXPORTAR copia al portapapeles.", 30, 42)
 
   draw_button(by_id.export_all, "EXPORTAR TODO", { 0.30, 0.80, 0.90 }, true)
   draw_button(by_id.import, "IMPORTAR", { 0.95, 0.60, 0.25 }, true)
@@ -192,15 +198,22 @@ local function draw_saved(state)
       local entry = entries[first + slot - 1]
       if entry then
         local y = 100 + (slot - 1) * 60
-        draw_box(42, y, 410, 52, { 0.25, 0.55, 0.80 })
+        local global_index = first + slot - 1
+        local is_current = state.list_index == global_index and state.list_playing
+        local play_mode = is_current and not state.list_paused and "pause" or "play"
+
+        draw_transport_icon(by_id["list_toggle_" .. slot], play_mode, { 0.30, 0.90, 0.55 }, is_current)
+        draw_transport_icon(by_id["list_stop_" .. slot], "stop", { 0.90, 0.40, 0.35 }, is_current)
+
+        draw_box(160, y, 290, 52, { 0.25, 0.55, 0.80 })
         love.graphics.setFont(fonts.normal)
         love.graphics.setColor(1, 1, 1)
-        love.graphics.print((entry.text or ""):sub(1, 32), 54, y + 6)
+        love.graphics.print((entry.text or ""):sub(1, 28), 172, y + 6)
         love.graphics.setFont(fonts.small)
         love.graphics.setColor(0.68, 0.74, 0.80)
         love.graphics.print(string.format("BPM %s · %s · %s · semilla %s",
           tostring(entry.bpm), tostring(entry.dungeon), tostring(entry.rhythm),
-          tostring(entry.seed)):sub(1, 58), 54, y + 30)
+          tostring(entry.seed)):sub(1, 34), 172, y + 30)
 
         draw_button(by_id["load_" .. slot], "CARGAR", { 0.30, 0.90, 0.55 }, true)
         draw_button(by_id["copy_" .. slot], "EXPORTAR", { 0.30, 0.80, 0.90 }, true)
@@ -209,13 +222,20 @@ local function draw_saved(state)
     end
   end
 
+  local all_active = state.list_playing and state.list_mode == "all"
+  local all_label = all_active and not state.list_paused and "PAUSAR TODO" or "REPRODUCIR TODO"
+
   draw_button(by_id.page_prev, "ANTERIOR", { 0.55, 0.45, 0.95 }, state.saved_page > 1)
   draw_button(by_id.page_next, "SIGUIENTE", { 0.55, 0.45, 0.95 }, state.saved_page < total_pages)
+  draw_button(by_id.list_prev, "<", { 0.55, 0.45, 0.95 }, #entries > 0)
+  draw_button(by_id.list_play_all, all_label, { 0.30, 0.90, 0.55 }, #entries > 0)
+  draw_button(by_id.list_stop_all, "DETENER", { 0.90, 0.40, 0.35 }, state.list_playing)
+  draw_button(by_id.list_next, ">", { 0.55, 0.45, 0.95 }, #entries > 0)
 
   love.graphics.setFont(fonts.small)
   love.graphics.setColor(0.62, 0.70, 0.78)
   love.graphics.print(string.format("Página %d/%d · %d guardadas",
-    state.saved_page, total_pages, #entries), 306, 416)
+    state.saved_page, total_pages, #entries), 734, 416)
   love.graphics.print(state.status or "", 42, 460)
 end
 

@@ -56,6 +56,18 @@ local state = {
   playing = false,
   paused = false,
   auto_paused = false,
+  list_source = nil,
+  list_index = nil,
+  list_queue = {},
+  list_queue_pos = 0,
+  list_mode = nil,
+  list_duration = 0,
+  list_elapsed = 0,
+  list_playing = false,
+  list_paused = false,
+  list_auto_paused = false,
+  main_held_source = nil,
+  main_held = false,
   status = "Escribe tu cadena y elige mazmorra, luego reproduce."
 }
 
@@ -192,6 +204,182 @@ local function export_seed()
   end
 end
 
+local function resume_held_main()
+  if not state.main_held or not state.main_held_source then
+    state.main_held_source = nil
+    state.main_held = false
+    return
+  end
+
+  local source = state.main_held_source
+  state.main_held_source = nil
+  state.main_held = false
+  state.source = source
+  state.source:play()
+  state.playing = true
+  state.paused = false
+  state.elapsed = 0
+  state.beat = 0
+  state.step = 0
+end
+
+local function release_held_main()
+  if state.main_held_source then
+    state.main_held_source:stop()
+  end
+  state.main_held_source = nil
+  state.main_held = false
+end
+
+local function hold_main_playback()
+  if not state.source then
+    return
+  end
+
+  state.main_held = state.playing
+  state.main_held_source = state.source
+  state.source:stop()
+  state.source = nil
+  state.playing = false
+  state.paused = false
+  state.elapsed = 0
+  if not state.main_held then
+    release_held_main()
+  end
+end
+
+local function spec_from_entry(entry)
+  local dungeon = Catalog.dungeon_at(Catalog.dungeon_index_of(entry.dungeon) or 1)
+  local bpm = math.max(Catalog.bpm_min, math.min(Catalog.bpm_max, entry.bpm or dungeon.bpm))
+  local text = (entry.text ~= "" and entry.text) or "A"
+  local motif = Melody.from_text(text)
+  if #motif == 0 then
+    motif = { "A" }
+  end
+
+  return {
+    bpm = bpm,
+    motif = motif,
+    timbre = entry.instrument or "sine",
+    arp_timbre = entry.arp_instrument or "bell",
+    seed = entry.seed or Melody.make_seed("custom", dungeon.id, entry.variation or 1, text),
+    rhythm = Catalog.rhythms[index_of_id(Catalog.rhythms, entry.rhythm)],
+    progression = Catalog.progressions[index_of_id(Catalog.progressions, entry.progression)],
+    layers = {
+      rhythm = entry.mute_rhythm ~= true,
+      harmony = entry.mute_harmony ~= true,
+      lead = entry.mute_lead ~= true,
+      arp = entry.mute_arp ~= true
+    },
+    transpose = entry.transpose or 0,
+    bars = entry.bars or Catalog.bars,
+    beats_per_bar = entry.beats_per_bar or Catalog.beats_per_bar
+  }
+end
+
+local function stop_list(resume_main)
+  if state.list_source then
+    state.list_source:stop()
+  end
+
+  local should_resume = resume_main ~= false and state.main_held
+  state.list_source = nil
+  state.list_index = nil
+  state.list_queue = {}
+  state.list_queue_pos = 0
+  state.list_mode = nil
+  state.list_duration = 0
+  state.list_elapsed = 0
+  state.list_playing = false
+  state.list_paused = false
+  state.list_auto_paused = false
+  state.status = "Reproducción de guardados detenida."
+
+  if should_resume then
+    resume_held_main()
+  else
+    release_held_main()
+  end
+end
+
+local function start_list_track(index)
+  local entry = state.saved_entries[index]
+  if not entry then
+    return false
+  end
+
+  if state.list_source then
+    state.list_source:stop()
+  end
+  hold_main_playback()
+
+  local sound_data, duration = Synth.render(spec_from_entry(entry))
+  state.list_source = love.audio.newSource(sound_data, "static")
+  state.list_source:setLooping(false)
+  state.list_source:setVolume(0.75)
+  state.list_source:play()
+  state.list_index = index
+  state.list_duration = duration
+  state.list_elapsed = 0
+  state.list_playing = true
+  state.list_paused = false
+  state.list_auto_paused = false
+  state.status = "Guardado: " .. ((entry.text ~= "" and entry.text) or "A")
+  return true
+end
+
+local function toggle_list_track(index)
+  if state.list_playing and state.list_index == index then
+    if state.list_paused then
+      state.list_source:play()
+      state.list_paused = false
+      state.status = "Guardado reanudado."
+    else
+      state.list_source:pause()
+      state.list_paused = true
+      state.status = "Guardado pausado."
+    end
+    return
+  end
+
+  state.list_mode = "one"
+  state.list_queue = {}
+  state.list_queue_pos = 0
+  start_list_track(index)
+end
+
+local function start_list_all()
+  if #state.saved_entries == 0 then
+    state.status = "No hay configuraciones guardadas."
+    return
+  end
+
+  state.list_queue = {}
+  for index = 1, #state.saved_entries do
+    state.list_queue[index] = index
+  end
+  state.list_queue_pos = 1
+  state.list_mode = "all"
+  start_list_track(state.list_queue[1])
+end
+
+local function list_step(delta)
+  if #state.saved_entries == 0 then
+    return
+  end
+
+  if #state.list_queue == 0 then
+    state.list_queue = {}
+    for index = 1, #state.saved_entries do
+      state.list_queue[index] = index
+    end
+    state.list_queue_pos = state.list_index or 1
+  end
+
+  state.list_queue_pos = ((state.list_queue_pos + delta - 1) % #state.list_queue) + 1
+  start_list_track(state.list_queue[state.list_queue_pos])
+end
+
 local function open_saved()
   state.saved_entries = Exporter.load()
   state.saved_page = 1
@@ -199,6 +387,7 @@ local function open_saved()
 end
 
 local function close_saved()
+  stop_list(true)
   state.view = "main"
 end
 
@@ -209,6 +398,7 @@ local function load_saved(slot)
     return
   end
 
+  stop_list(false)
   state.dungeon_index = Catalog.dungeon_index_of(entry.dungeon) or 1
   local base_bpm = Catalog.dungeon_at(state.dungeon_index).bpm
   local imported_bpm = math.max(Catalog.bpm_min,
@@ -247,6 +437,10 @@ local function delete_saved(slot)
   local index = (state.saved_page - 1) * 5 + slot
   if not state.saved_entries[index] then
     return
+  end
+
+  if state.list_index == index then
+    stop_list(true)
   end
 
   local written, _, err, count = Exporter.delete_entry(index)
@@ -333,6 +527,9 @@ local function handle_action(action)
       math.min(Catalog.bpm_max, state.bpm + delta))
     refresh(active)
   elseif action == "play" or action == "play_pause" then
+    if state.list_playing then
+      stop_list(false)
+    end
     if state.playing then
       state.source:pause()
       state.playing = false
@@ -370,6 +567,21 @@ local function handle_action(action)
     export_seed()
   elseif action == "saved" then
     open_saved()
+  elseif action:match("^list_toggle_%d+$") then
+    toggle_list_track(tonumber(action:sub(13)))
+  elseif action:match("^list_stop_%d+$") then
+    local index = tonumber(action:sub(11))
+    if state.list_playing and state.list_index == index then
+      stop_list(true)
+    end
+  elseif action == "list_play_all" then
+    start_list_all()
+  elseif action == "list_stop_all" then
+    stop_list(true)
+  elseif action == "list_prev" then
+    list_step(-1)
+  elseif action == "list_next" then
+    list_step(1)
   elseif action == "import" then
     open_import()
   elseif action == "import_confirm" then
@@ -415,6 +627,18 @@ function love.load()
 end
 
 function love.update(dt)
+  if state.list_playing and not state.list_paused and state.list_source then
+    state.list_elapsed = state.list_elapsed + dt
+    if state.list_elapsed >= state.list_duration then
+      if state.list_mode == "all" and state.list_queue_pos < #state.list_queue then
+        state.list_queue_pos = state.list_queue_pos + 1
+        start_list_track(state.list_queue[state.list_queue_pos])
+      else
+        stop_list(true)
+      end
+    end
+  end
+
   -- Reloj propio: getPosition() de una fuente estatica no avanza en Android.
   if not state.source or not state.playing then
     return
@@ -557,24 +781,41 @@ function love.resize(width, height)
 end
 
 function love.focus(focused)
-  if not state.source then
-    return
-  end
-
   if not focused then
+    if state.list_playing and not state.list_paused and state.list_source then
+      state.list_source:pause()
+      state.list_paused = true
+      state.list_auto_paused = true
+    end
+    if not state.source then
+      return
+    end
     state.auto_paused = state.playing
     if state.playing then
       state.source:pause()
       state.playing = false
     end
-  elseif state.auto_paused then
-    state.source:play()
-    state.playing = true
-    state.auto_paused = false
+  else
+    if state.list_auto_paused and state.list_source then
+      state.list_source:play()
+      state.list_paused = false
+      state.list_auto_paused = false
+    end
+    if not state.source then
+      return
+    end
+    if state.auto_paused then
+      state.source:play()
+      state.playing = true
+      state.auto_paused = false
+    end
   end
 end
 
 function love.quit()
+  if state.list_source then
+    state.list_source:stop()
+  end
   if state.source then
     state.source:stop()
   end
