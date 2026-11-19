@@ -4,7 +4,7 @@ local Screen = require("src.utils.screen")
 local UI = {}
 
 local fonts = {}
-local buttons = { main = {}, saved = {} }
+local buttons = { main = {}, saved = {}, import = {} }
 local by_id = {}
 
 local function add_button(view, id, x, y, width, height)
@@ -63,7 +63,11 @@ function UI.load()
   end
   add_button("saved", "page_prev", 42, 404, 120, 44)
   add_button("saved", "page_next", 170, 404, 120, 44)
+  add_button("saved", "import", 660, 8, 130, 44)
   add_button("saved", "volver", 800, 8, 130, 44)
+
+  add_button("import", "import_confirm", 60, 430, 180, 44)
+  add_button("import", "import_cancel", 250, 430, 180, 44)
 end
 
 function UI.action_at(x, y, view)
@@ -167,6 +171,7 @@ local function draw_saved(state)
   love.graphics.setColor(0.65, 0.72, 0.78)
   love.graphics.print("CARGAR usa la configuración · EXPORTAR copia al portapapeles · BORRAR la quita.", 30, 42)
 
+  draw_button(by_id.import, "IMPORTAR", { 0.95, 0.60, 0.25 }, true)
   draw_button(by_id.volver, "VOLVER", { 0.90, 0.40, 0.35 }, true)
   draw_panel(30, 84, 900, 408)
 
@@ -212,9 +217,42 @@ local function draw_saved(state)
   love.graphics.print(state.status or "", 42, 460)
 end
 
+local function draw_import(state)
+  love.graphics.setFont(fonts.title)
+  love.graphics.setColor(0.55, 0.90, 1.00)
+  love.graphics.print("IMPORTAR CONFIGURACIÓN", 30, 10)
+
+  love.graphics.setFont(fonts.small)
+  love.graphics.setColor(0.65, 0.72, 0.78)
+  love.graphics.print("Pega una entrada o un return { ... } completo; se crea un registro por tabla válida.", 30, 42)
+
+  draw_box(60, 100, 840, 300, { 0.30, 0.80, 0.90 })
+  love.graphics.setFont(fonts.small)
+  local text = state.import_buffer or ""
+  if text == "" then
+    love.graphics.setColor(0.55, 0.60, 0.66)
+    love.graphics.print('Formato: { text = "...", dungeon = "...", bpm = 120, ... }', 76, 116)
+  else
+    love.graphics.setColor(0.90, 0.94, 0.98)
+    love.graphics.printf(text, 76, 116, 808, "left")
+  end
+
+  draw_button(by_id.import_confirm, "IMPORTAR", { 0.30, 0.90, 0.55 }, true)
+  draw_button(by_id.import_cancel, "CANCELAR", { 0.90, 0.40, 0.35 }, true)
+
+  love.graphics.setFont(fonts.small)
+  love.graphics.setColor(state.import_error ~= "" and { 1.00, 0.40, 0.35 } or { 0.62, 0.70, 0.78 })
+  love.graphics.print(state.import_error ~= "" and state.import_error or
+    string.format("%d caracteres · Enter confirma · Esc cancela", #text), 60, 486)
+end
+
 function UI.draw(state, catalog)
   if state.view == "saved" then
     draw_saved(state)
+    return
+  end
+  if state.view == "import" then
+    draw_import(state)
     return
   end
 

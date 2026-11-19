@@ -6,6 +6,7 @@ local UI = require("src.ui.interface")
 local Exporter = require("src.utils.exporter")
 
 local MAX_TEXT = 32
+local MAX_IMPORT = 65536
 local touch_device = love.system.getOS() == "Android" or love.system.getOS() == "iOS"
 
 local function index_of_id(list, id)
@@ -37,6 +38,8 @@ local state = {
   view = "main",
   saved_entries = {},
   saved_page = 1,
+  import_buffer = "",
+  import_error = "",
   transpose = 0,
   duration = 0,
   elapsed = 0,
@@ -207,7 +210,9 @@ local function load_saved(slot)
 
   state.dungeon_index = Catalog.dungeon_index_of(entry.dungeon) or 1
   local base_bpm = Catalog.dungeon_at(state.dungeon_index).bpm
-  state.bpm_custom = entry.bpm and entry.bpm ~= base_bpm and entry.bpm or nil
+  local imported_bpm = math.max(Catalog.bpm_min,
+    math.min(Catalog.bpm_max, entry.bpm or base_bpm))
+  state.bpm_custom = imported_bpm ~= base_bpm and imported_bpm or nil
   state.rhythm_index = index_of_id(Catalog.rhythms, entry.rhythm)
   state.progression_index = index_of_id(Catalog.progressions, entry.progression)
   state.instrument_index = index_of_id(Catalog.instruments, entry.instrument)
@@ -250,6 +255,46 @@ local function delete_saved(slot)
   state.saved_page = math.max(1, math.min(state.saved_page, total_pages))
   state.status = written and ("Eliminada. Quedan " .. count .. " guardadas.") or
     ("No se pudo eliminar: " .. tostring(err))
+end
+
+local function open_import()
+  state.view = "import"
+  state.import_buffer = ""
+  state.import_error = ""
+  if love.keyboard.setTextInput then
+    pcall(love.keyboard.setTextInput, true, 60, 100, 840, 300)
+  end
+end
+
+local function close_import()
+  if love.keyboard.setTextInput then
+    pcall(love.keyboard.setTextInput, false)
+  end
+  state.view = "saved"
+end
+
+local function confirm_import()
+  local entries, err = Exporter.parse_entries(state.import_buffer)
+  if #entries == 0 then
+    state.import_error = err
+    return
+  end
+
+  local total = 0
+  for index = 1, #entries do
+    local written, _, write_err, count = Exporter.add(entries[index])
+    if not written then
+      state.import_error = "No se pudo guardar: " .. tostring(write_err)
+      return
+    end
+    total = count
+  end
+
+  state.exported_count = total
+  state.saved_entries = Exporter.load()
+  state.saved_page = 1
+  close_import()
+  state.status = "Importadas (" .. #entries .. ") · total " .. total .. " guardadas"
 end
 
 local function handle_action(action)
@@ -324,6 +369,12 @@ local function handle_action(action)
     export_seed()
   elseif action == "saved" then
     open_saved()
+  elseif action == "import" then
+    open_import()
+  elseif action == "import_confirm" then
+    confirm_import()
+  elseif action == "import_cancel" then
+    close_import()
   elseif action == "volver" then
     close_saved()
   elseif action == "page_prev" then
@@ -395,6 +446,14 @@ function love.draw()
 end
 
 function love.textinput(text)
+  if state.view == "import" then
+    local cleaned = text:gsub("\r", "")
+    if cleaned ~= "" and #state.import_buffer < MAX_IMPORT then
+      state.import_buffer = state.import_buffer .. cleaned:sub(1, MAX_IMPORT - #state.import_buffer)
+    end
+    return
+  end
+
   if not state.editing then
     return
   end
@@ -411,6 +470,18 @@ function love.keypressed(key)
       state.edit_buffer = state.edit_buffer:sub(1, -2)
     elseif key == "enter" or key == "keypad enter" or key == "escape" then
       confirm_edit()
+    end
+    return
+  end
+
+  if state.view == "import" then
+    if key == "backspace" then
+      state.import_buffer = state.import_buffer:sub(1, -2)
+      state.import_error = ""
+    elseif key == "enter" or key == "keypad enter" then
+      confirm_import()
+    elseif key == "escape" then
+      close_import()
     end
     return
   end

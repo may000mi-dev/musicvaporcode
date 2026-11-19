@@ -42,6 +42,9 @@ function Catalog.dungeon_at(index)
 end
 
 function Catalog.dungeon_index_of(id)
+  if id == "pruebas" then
+    id = "sandbox"
+  end
   for index = 1, #Catalog.dungeons do
     if Catalog.dungeons[index].id == id then
       return index

@@ -8,6 +8,77 @@ local function quote(value)
   return '"' .. text .. '"'
 end
 
+local function find_field(text, key, value_pattern)
+  local pattern = key .. "%s*=%s*" .. value_pattern
+  local from = 1
+  while true do
+    local start, finish, value = text:find(pattern, from)
+    if not start then
+      return nil
+    end
+    local previous = start > 1 and text:sub(start - 1, start - 1) or ""
+    if previous == "" or not previous:match("[%w_]") then
+      return finish, value
+    end
+    from = start + 1
+  end
+end
+
+local function read_quoted(text, key)
+  local finish = find_field(text, key, '"')
+  if not finish then
+    return nil
+  end
+
+  local result = {}
+  local index = finish + 1
+  while index <= #text do
+    local character = text:sub(index, index)
+    if character == '"' then
+      return table.concat(result)
+    elseif character == "\\" then
+      local escaped = text:sub(index + 1, index + 1)
+      if escaped == "" then
+        return nil
+      elseif escaped == "n" then
+        result[#result + 1] = "\n"
+      elseif escaped == "r" then
+        result[#result + 1] = "\r"
+      elseif escaped == "t" then
+        result[#result + 1] = "\t"
+      elseif escaped == "\\" or escaped == '"' then
+        result[#result + 1] = escaped
+      elseif escaped:match("%d") then
+        local digits = text:sub(index + 1, index + 3):match("^%d+")
+        result[#result + 1] = string.char(tonumber(digits) % 256)
+        index = index + #digits - 1
+      else
+        result[#result + 1] = escaped
+      end
+      index = index + 2
+    else
+      result[#result + 1] = character
+      index = index + 1
+    end
+  end
+  return nil
+end
+
+local function read_number(text, key)
+  local _, value = find_field(text, key, "(-?%d+)")
+  return tonumber(value)
+end
+
+local function read_bool(text, key)
+  local _, value = find_field(text, key, "(%a+)")
+  if value == "true" then
+    return true
+  elseif value == "false" then
+    return false
+  end
+  return nil
+end
+
 local function format_entry(item)
   return string.format(
     "  { text = %s, dungeon = %s, bpm = %d, rhythm = %s, progression = %s, seed = %d, variation = %d, transpose = %d, instrument = %s, arp_instrument = %s, mute_rhythm = %s, mute_harmony = %s, mute_lead = %s, mute_arp = %s, bars = %d, beats_per_bar = %d },",
@@ -61,7 +132,7 @@ function Exporter.load()
   return data
 end
 
-function Exporter.export(entry)
+function Exporter.add(entry)
   local data = Exporter.load()
 
   for index = #data, 1, -1 do
@@ -71,7 +142,11 @@ function Exporter.export(entry)
   end
   data[#data + 1] = entry
 
-  local written, path, err, count, contents = write_data(data)
+  return write_data(data)
+end
+
+function Exporter.export(entry)
+  local written, path, err, count, contents = Exporter.add(entry)
 
   -- En Android el archivo queda en el save dir de la app; el portapapeles
   -- permite sacarlo sin acceso a root ni a almacenamiento compartido.
@@ -98,6 +173,152 @@ function Exporter.delete_entry(index)
 
   table.remove(data, index)
   return write_data(data)
+end
+
+local function count_field(text, key)
+  local pattern = key .. "%s*=%s*"
+  local total = 0
+  local from = 1
+  while true do
+    local start = text:find(pattern, from)
+    if not start then
+      return total
+    end
+    local previous = start > 1 and text:sub(start - 1, start - 1) or ""
+    if previous == "" or not previous:match("[%w_]") then
+      total = total + 1
+    end
+    from = start + 1
+  end
+end
+
+local function strip_comments(text)
+  local result = {}
+  local index = 1
+  local in_quote = false
+  while index <= #text do
+    local character = text:sub(index, index)
+    if in_quote then
+      result[#result + 1] = character
+      if character == "\\" then
+        result[#result + 1] = text:sub(index + 1, index + 1)
+        index = index + 2
+      else
+        if character == '"' then
+          in_quote = false
+        end
+        index = index + 1
+      end
+    elseif character == '"' then
+      in_quote = true
+      result[#result + 1] = character
+      index = index + 1
+    elseif character == "-" and text:sub(index + 1, index + 1) == "-" then
+      while index <= #text and text:sub(index, index) ~= "\n" do
+        index = index + 1
+      end
+    else
+      result[#result + 1] = character
+      index = index + 1
+    end
+  end
+  return table.concat(result)
+end
+
+local function split_blocks(text)
+  local blocks = {}
+  local stack = {}
+  local in_quote = false
+  local index = 1
+  while index <= #text do
+    local character = text:sub(index, index)
+    if in_quote then
+      if character == "\\" then
+        index = index + 2
+      else
+        if character == '"' then
+          in_quote = false
+        end
+        index = index + 1
+      end
+    elseif character == '"' then
+      in_quote = true
+      index = index + 1
+    elseif character == "{" then
+      stack[#stack + 1] = index
+      index = index + 1
+    elseif character == "}" then
+      if #stack > 0 then
+        local start = table.remove(stack)
+        blocks[#blocks + 1] = text:sub(start, index)
+      end
+      index = index + 1
+    else
+      index = index + 1
+    end
+  end
+  return blocks
+end
+
+local function parse_one(block)
+  local entry = {
+    text = read_quoted(block, "text"),
+    dungeon = read_quoted(block, "dungeon"),
+    rhythm = read_quoted(block, "rhythm"),
+    progression = read_quoted(block, "progression"),
+    instrument = read_quoted(block, "instrument"),
+    arp_instrument = read_quoted(block, "arp_instrument")
+  }
+
+  local required = { "text", "dungeon", "rhythm", "progression", "instrument", "arp_instrument" }
+  for index = 1, #required do
+    if not entry[required[index]] then
+      return nil, "Falta el campo " .. required[index] .. "."
+    end
+  end
+
+  entry.bpm = read_number(block, "bpm") or 120
+  entry.seed = read_number(block, "seed") or 0
+  entry.variation = read_number(block, "variation") or 1
+  entry.transpose = read_number(block, "transpose") or 0
+  entry.bars = read_number(block, "bars") or 4
+  entry.beats_per_bar = read_number(block, "beats_per_bar") or 4
+  entry.mute_rhythm = read_bool(block, "mute_rhythm") == true
+  entry.mute_harmony = read_bool(block, "mute_harmony") == true
+  entry.mute_lead = read_bool(block, "mute_lead") == true
+  entry.mute_arp = read_bool(block, "mute_arp") == true
+
+  return entry
+end
+
+function Exporter.parse_entries(text)
+  if type(text) ~= "string" or text == "" then
+    return {}, "Pega una entrada con el formato de EXPORTAR."
+  end
+
+  local blocks = split_blocks(strip_comments(text))
+  local entries = {}
+  for index = 1, #blocks do
+    if count_field(blocks[index], "text") == 1 then
+      local entry = parse_one(blocks[index])
+      if entry then
+        entries[#entries + 1] = entry
+      end
+    end
+  end
+
+  if #entries == 0 then
+    return {}, "No encontré tablas válidas con el formato de EXPORTAR."
+  end
+  return entries
+end
+
+function Exporter.parse_entry(text)
+  local entries, err = Exporter.parse_entries(text)
+  if #entries == 0 then
+    return nil, err
+  end
+  return entries[1]
 end
 
 return Exporter
