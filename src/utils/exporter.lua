@@ -80,16 +80,58 @@ local function read_bool(text, key)
   return nil
 end
 
+local function entry_id(entry)
+  local text = tostring(entry.text or ""):gsub("[^%w]", "")
+  if text == "" then
+    text = "A"
+  end
+  return string.format("%s_%s_%d_%d", tostring(entry.seed or 0), text,
+    entry.bpm or 0, entry.variation or 1)
+end
+
 local function format_entry(item)
   return string.format(
-    "  { text = %s, dungeon = %s, bpm = %d, rhythm = %s, progression = %s, seed = %d, variation = %d, transpose = %d, instrument = %s, arp_instrument = %s, mute_rhythm = %s, mute_harmony = %s, mute_lead = %s, mute_arp = %s, bars = %d, beats_per_bar = %d },",
-    quote(item.text), quote(item.dungeon), item.bpm or 0,
+    "  { id = %s, text = %s, dungeon = %s, bpm = %d, rhythm = %s, progression = %s, seed = %d, variation = %d, transpose = %d, instrument = %s, arp_instrument = %s, mute_rhythm = %s, mute_harmony = %s, mute_lead = %s, mute_arp = %s, bars = %d, beats_per_bar = %d },",
+    quote(item.id or entry_id(item)), quote(item.text), quote(item.dungeon), item.bpm or 0,
     quote(item.rhythm), quote(item.progression), item.seed or 0, item.variation or 1,
     item.transpose or 0, quote(item.instrument), quote(item.arp_instrument),
     tostring(item.mute_rhythm == true), tostring(item.mute_harmony == true),
     tostring(item.mute_lead == true), tostring(item.mute_arp == true),
     item.bars or 4, item.beats_per_bar or 4
   )
+end
+
+local function normalize(data)
+  if type(data) ~= "table" then
+    return {}
+  end
+
+  for index = 1, #data do
+    if type(data[index]) == "table" and data[index].id == nil then
+      data[index].id = entry_id(data[index])
+    end
+  end
+
+  if type(data.playlists) ~= "table" then
+    data.playlists = {}
+  end
+  for index = #data.playlists, 1, -1 do
+    local playlist = data.playlists[index]
+    if type(playlist) ~= "table" or type(playlist.name) ~= "string" then
+      table.remove(data.playlists, index)
+    else
+      if type(playlist.tracks) ~= "table" then
+        playlist.tracks = {}
+      end
+      for track_index = #playlist.tracks, 1, -1 do
+        if type(playlist.tracks[track_index]) ~= "string" then
+          table.remove(playlist.tracks, track_index)
+        end
+      end
+    end
+  end
+
+  return data
 end
 
 local function load_real()
@@ -135,22 +177,41 @@ local function write_real(contents)
   end)
 end
 
+local function format_playlist(playlist)
+  local tracks = {}
+  for index = 1, #playlist.tracks do
+    tracks[index] = quote(playlist.tracks[index])
+  end
+  return string.format("    { name = %s, tracks = { %s } },",
+    quote(playlist.name or "Lista"), table.concat(tracks, ", "))
+end
+
 local function build_contents(data)
   local lines = {
     "-- Configuraciones guardadas en MusicVaporCode.",
     "-- Cada entrada reproduce el mismo resultado en el sandbox.",
+    "-- playlists agrupa ids de entradas en listas de reproducción.",
     "return {"
   }
 
   for index = 1, #data do
     lines[#lines + 1] = format_entry(data[index])
   end
+
+  lines[#lines + 1] = "  playlists = {"
+  for index = 1, #data.playlists do
+    lines[#lines + 1] = format_playlist(data.playlists[index])
+  end
+  lines[#lines + 1] = "  }"
   lines[#lines + 1] = "}"
 
   return table.concat(lines, "\n")
 end
 
 local function write_data(data)
+  if type(data.playlists) ~= "table" then
+    data.playlists = {}
+  end
   local contents = build_contents(data)
   love.filesystem.createDirectory("exports")
   local written, err = love.filesystem.write(PATH, contents)
@@ -176,12 +237,12 @@ function Exporter.load()
   local ok, chunk = pcall(love.filesystem.load, PATH)
   if ok and chunk then
     local loaded, data = pcall(chunk)
-    if loaded and type(data) == "table" and #data > 0 then
-      return data
+    if loaded and type(data) == "table" and (#data > 0 or (#(data.playlists or {}) > 0)) then
+      return normalize(data)
     end
   end
 
-  return load_real() or {}
+  return normalize(load_real() or {})
 end
 
 function Exporter.add(entry)
@@ -236,8 +297,134 @@ function Exporter.delete_entry(index)
     return false, "entrada no encontrada", nil, #data
   end
 
+  local id = entry_id(data[index])
   table.remove(data, index)
+  for _, playlist in ipairs(data.playlists) do
+    for track_index = #playlist.tracks, 1, -1 do
+      if playlist.tracks[track_index] == id then
+        table.remove(playlist.tracks, track_index)
+      end
+    end
+  end
   return write_data(data)
+end
+
+function Exporter.entry_id(entry)
+  return entry_id(entry)
+end
+
+function Exporter.create_playlist(name)
+  local data = Exporter.load()
+  name = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if name == "" then
+    name = "Lista " .. (#data.playlists + 1)
+  end
+
+  for _, playlist in ipairs(data.playlists) do
+    if playlist.name == name then
+      return false, "ya existe una lista con ese nombre", nil, name
+    end
+  end
+
+  data.playlists[#data.playlists + 1] = { name = name, tracks = {} }
+  local written, path, err = write_data(data)
+  return written, path, err, name, #data.playlists
+end
+
+local function playlist_at(index)
+  local data = Exporter.load()
+  return data, data.playlists[index]
+end
+
+function Exporter.add_to_playlist(index, id)
+  local data, playlist = playlist_at(index)
+  if not playlist then
+    return false, "lista no encontrada", nil, 0
+  end
+  if type(id) ~= "string" then
+    return false, "pista no encontrada", nil, #playlist.tracks
+  end
+
+  for _, track_id in ipairs(playlist.tracks) do
+    if track_id == id then
+      return true, nil, nil, #playlist.tracks, false
+    end
+  end
+
+  playlist.tracks[#playlist.tracks + 1] = id
+  local written, path, err = write_data(data)
+  return written, path, err, #playlist.tracks, true
+end
+
+function Exporter.remove_from_playlist(index, id)
+  local data, playlist = playlist_at(index)
+  if not playlist then
+    return false, "lista no encontrada", nil, 0
+  end
+
+  for track_index = #playlist.tracks, 1, -1 do
+    if playlist.tracks[track_index] == id then
+      table.remove(playlist.tracks, track_index)
+    end
+  end
+  local written, path, err = write_data(data)
+  return written, path, err, #playlist.tracks, true
+end
+
+function Exporter.playlist_items(index)
+  local data = Exporter.load()
+  local playlist = data.playlists[index]
+  if not playlist then
+    return {}
+  end
+
+  local items = {}
+  for _, id in ipairs(playlist.tracks) do
+    for entry_index = #data, 1, -1 do
+      if entry_id(data[entry_index]) == id then
+        items[#items + 1] = { index = entry_index, entry = data[entry_index] }
+        break
+      end
+    end
+  end
+  return items
+end
+
+function Exporter.format_details(entry)
+  local function on_off(value)
+    return value and "sí" or "no"
+  end
+
+  return table.concat({
+    "CONFIGURACIÓN GUARDADA EN MUSICVAPORCODE",
+    "",
+    "ID: " .. tostring(entry.id or entry_id(entry)),
+    "Texto: " .. tostring(entry.text or ""),
+    "Mazmorra: " .. tostring(entry.dungeon or ""),
+    "BPM: " .. tostring(entry.bpm or 0),
+    "Ritmo: " .. tostring(entry.rhythm or ""),
+    "Progresión: " .. tostring(entry.progression or ""),
+    "Instrumento: " .. tostring(entry.instrument or ""),
+    "Arpeggio: " .. tostring(entry.arp_instrument or ""),
+    "Semilla: " .. tostring(entry.seed or 0),
+    "Variación: " .. tostring(entry.variation or 1),
+    "Transposición: " .. tostring(entry.transpose or 0),
+    "Compases: " .. tostring(entry.bars or 4),
+    "Beats por compás: " .. tostring(entry.beats_per_bar or 4),
+    "",
+    "Capas activas:",
+    "  Ritmo: " .. on_off(entry.mute_rhythm ~= true),
+    "  Armonía: " .. on_off(entry.mute_harmony ~= true),
+    "  Melodía: " .. on_off(entry.mute_lead ~= true),
+    "  Arpeggio: " .. on_off(entry.mute_arp ~= true)
+  }, "\n")
+end
+
+function Exporter.copy_details(entry)
+  if not love.system or not love.system.setClipboardText then
+    return false, "portapapeles no disponible"
+  end
+  return pcall(love.system.setClipboardText, Exporter.format_details(entry))
 end
 
 local function count_field(text, key)
@@ -327,6 +514,7 @@ end
 
 local function parse_one(block)
   local entry = {
+    id = read_quoted(block, "id"),
     text = read_quoted(block, "text"),
     dungeon = read_quoted(block, "dungeon"),
     rhythm = read_quoted(block, "rhythm"),
@@ -352,6 +540,7 @@ local function parse_one(block)
   entry.mute_harmony = read_bool(block, "mute_harmony") == true
   entry.mute_lead = read_bool(block, "mute_lead") == true
   entry.mute_arp = read_bool(block, "mute_arp") == true
+  entry.id = entry.id or entry_id(entry)
 
   return entry
 end

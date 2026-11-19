@@ -7,7 +7,10 @@ local Exporter = require("src.utils.exporter")
 
 local MAX_TEXT = 32
 local MAX_IMPORT = 65536
+local MAX_NAME = 40
 local touch_device = love.system.getOS() == "Android" or love.system.getOS() == "iOS"
+
+local refresh_saved
 
 local function index_of_id(list, id)
   for index = 1, #list do
@@ -37,7 +40,23 @@ local state = {
   bpm_custom = nil,
   view = "main",
   saved_entries = {},
+  saved_items = {},
+  playlists = {},
+  active_tab = 0,
+  tab_offset = 0,
   saved_page = 1,
+  modal = nil,
+  modal_title = "",
+  modal_text = "",
+  modal_buffer = "",
+  modal_error = "",
+  modal_scroll = 0,
+  modal_max_scroll = 0,
+  modal_target_index = nil,
+  modal_target_id = nil,
+  modal_playlist_index = nil,
+  modal_list_offset = 0,
+  pending_add_index = nil,
   import_buffer = "",
   import_error = "",
   transpose = 0,
@@ -196,7 +215,7 @@ local function export_seed()
   })
 
   state.exported_count = count
-  state.saved_entries = Exporter.load()
+  refresh_saved()
   if written then
     state.status = "Guardada (" .. count .. ") en exports/seeds.lua · también en portapapeles"
   else
@@ -302,6 +321,50 @@ local function stop_list(resume_main)
   end
 end
 
+local function build_saved_items()
+  local items = {}
+  if state.active_tab == 0 then
+    for index = 1, #state.saved_entries do
+      items[#items + 1] = { index = index, entry = state.saved_entries[index] }
+    end
+    return items
+  end
+
+  local playlist = state.playlists[state.active_tab]
+  if not playlist then
+    return items
+  end
+
+  for _, id in ipairs(playlist.tracks or {}) do
+    for index = #state.saved_entries, 1, -1 do
+      if Exporter.entry_id(state.saved_entries[index]) == id then
+        items[#items + 1] = { index = index, entry = state.saved_entries[index] }
+        break
+      end
+    end
+  end
+  return items
+end
+
+refresh_saved = function()
+  state.saved_entries = Exporter.load()
+  state.playlists = state.saved_entries.playlists or {}
+  if state.active_tab > #state.playlists then
+    state.active_tab = 0
+  end
+  state.saved_items = build_saved_items()
+  state.exported_count = #state.saved_entries
+  state.tab_offset = math.max(0,
+    math.min(state.tab_offset, math.max(0, #state.playlists - 6)))
+  local total_pages = math.max(1, math.ceil(#state.saved_items / 5))
+  state.saved_page = math.max(1, math.min(state.saved_page, total_pages))
+end
+
+local function global_index(slot)
+  local item = state.saved_items[slot]
+  return item and item.index
+end
+
 local function start_list_track(index)
   local entry = state.saved_entries[index]
   if not entry then
@@ -328,7 +391,12 @@ local function start_list_track(index)
   return true
 end
 
-local function toggle_list_track(index)
+local function toggle_list_track(slot)
+  local index = global_index(slot)
+  if not index then
+    return
+  end
+
   if state.list_playing and state.list_index == index then
     if state.list_paused then
       state.list_source:play()
@@ -349,14 +417,14 @@ local function toggle_list_track(index)
 end
 
 local function start_list_all()
-  if #state.saved_entries == 0 then
-    state.status = "No hay configuraciones guardadas."
+  if #state.saved_items == 0 then
+    state.status = "No hay configuraciones en esta pestaña."
     return
   end
 
   state.list_queue = {}
-  for index = 1, #state.saved_entries do
-    state.list_queue[index] = index
+  for slot = 1, #state.saved_items do
+    state.list_queue[slot] = state.saved_items[slot].index
   end
   state.list_queue_pos = 1
   state.list_mode = "all"
@@ -364,16 +432,22 @@ local function start_list_all()
 end
 
 local function list_step(delta)
-  if #state.saved_entries == 0 then
+  if #state.saved_items == 0 then
     return
   end
 
   if #state.list_queue == 0 then
     state.list_queue = {}
-    for index = 1, #state.saved_entries do
-      state.list_queue[index] = index
+    for slot = 1, #state.saved_items do
+      state.list_queue[slot] = state.saved_items[slot].index
     end
-    state.list_queue_pos = state.list_index or 1
+    state.list_queue_pos = 1
+    for position, index in ipairs(state.list_queue) do
+      if index == state.list_index then
+        state.list_queue_pos = position
+        break
+      end
+    end
   end
 
   state.list_queue_pos = ((state.list_queue_pos + delta - 1) % #state.list_queue) + 1
@@ -381,19 +455,33 @@ local function list_step(delta)
 end
 
 local function open_saved()
-  state.saved_entries = Exporter.load()
+  state.active_tab = 0
+  state.tab_offset = 0
   state.saved_page = 1
+  refresh_saved()
   state.view = "saved"
 end
 
+local function close_modal()
+  if love.keyboard.setTextInput then
+    pcall(love.keyboard.setTextInput, false)
+  end
+  state.modal = nil
+  state.modal_error = ""
+  state.pending_add_index = nil
+end
+
 local function close_saved()
+  if state.modal then
+    close_modal()
+  end
   stop_list(true)
   state.view = "main"
 end
 
 local function load_saved(slot)
-  local index = (state.saved_page - 1) * 5 + slot
-  local entry = state.saved_entries[index]
+  local index = global_index(slot)
+  local entry = index and state.saved_entries[index]
   if not entry then
     return
   end
@@ -422,8 +510,8 @@ local function load_saved(slot)
 end
 
 local function copy_saved(slot)
-  local index = (state.saved_page - 1) * 5 + slot
-  local entry = state.saved_entries[index]
+  local index = global_index(slot)
+  local entry = index and state.saved_entries[index]
   if not entry then
     return
   end
@@ -434,8 +522,8 @@ local function copy_saved(slot)
 end
 
 local function delete_saved(slot)
-  local index = (state.saved_page - 1) * 5 + slot
-  if not state.saved_entries[index] then
+  local index = global_index(slot)
+  if not index or not state.saved_entries[index] then
     return
   end
 
@@ -444,12 +532,142 @@ local function delete_saved(slot)
   end
 
   local written, _, err, count = Exporter.delete_entry(index)
-  state.saved_entries = Exporter.load()
-  state.exported_count = #state.saved_entries
-  local total_pages = math.max(1, math.ceil(#state.saved_entries / 5))
-  state.saved_page = math.max(1, math.min(state.saved_page, total_pages))
+  refresh_saved()
   state.status = written and ("Eliminada. Quedan " .. count .. " guardadas.") or
     ("No se pudo eliminar: " .. tostring(err))
+end
+
+local function count_lines(text)
+  local total = 1
+  for _ in text:gmatch("\n") do
+    total = total + 1
+  end
+  return total
+end
+
+local function open_details(slot)
+  local index = global_index(slot)
+  local entry = index and state.saved_entries[index]
+  if not entry then
+    return
+  end
+
+  state.modal = "details"
+  state.modal_target_index = index
+  state.modal_text = Exporter.format_details(entry)
+  state.modal_scroll = 0
+  state.modal_max_scroll = math.max(0, count_lines(state.modal_text) - 14)
+  local ok, err = Exporter.copy_details(entry)
+  state.status = ok and "Detalles copiados al portapapeles." or
+    ("No se pudo copiar: " .. tostring(err))
+end
+
+local function open_add_modal(slot)
+  local index = global_index(slot)
+  local entry = index and state.saved_entries[index]
+  if not entry then
+    return
+  end
+
+  state.modal = "add_to"
+  state.modal_target_index = index
+  state.modal_target_id = Exporter.entry_id(entry)
+  state.modal_list_offset = 0
+  state.modal_error = ""
+end
+
+local function add_track_by_index(playlist_index, entry_index)
+  local entry = state.saved_entries[entry_index]
+  if not entry then
+    return false, "configuración no encontrada"
+  end
+
+  local written, _, err, count, added = Exporter.add_to_playlist(playlist_index,
+    Exporter.entry_id(entry))
+  refresh_saved()
+  if not written then
+    return false, tostring(err)
+  end
+  return true, (added and "Añadida a " or "Ya estaba en ") ..
+    (state.playlists[playlist_index] and state.playlists[playlist_index].name or "la lista") ..
+    " (" .. count .. " pistas)."
+end
+
+local function remove_saved_from_playlist(slot)
+  if state.active_tab == 0 then
+    return
+  end
+
+  local index = global_index(slot)
+  local entry = index and state.saved_entries[index]
+  if not entry then
+    return
+  end
+
+  if state.list_index == index then
+    stop_list(true)
+  end
+
+  local written, _, err, count = Exporter.remove_from_playlist(state.active_tab,
+    Exporter.entry_id(entry))
+  refresh_saved()
+  state.status = written and ("Retirada de la lista (" .. count .. " pistas).") or
+    ("No se pudo retirar: " .. tostring(err))
+end
+
+local function switch_tab(tab)
+  stop_list(true)
+  state.active_tab = tab
+  state.saved_page = 1
+  if tab > 0 then
+    if tab < state.tab_offset then
+      state.tab_offset = tab
+    elseif tab > state.tab_offset + 5 then
+      state.tab_offset = tab - 5
+    end
+  end
+  refresh_saved()
+end
+
+local function open_new_playlist_modal(pending_index)
+  state.modal = "new_playlist"
+  state.modal_buffer = ""
+  state.modal_error = ""
+  state.pending_add_index = pending_index
+  if love.keyboard.setTextInput then
+    pcall(love.keyboard.setTextInput, true, 280, 180, 400, 44)
+  end
+end
+
+local function confirm_new_playlist()
+  local pending = state.pending_add_index
+  local written, _, err, name, count = Exporter.create_playlist(state.modal_buffer)
+  if not written then
+    state.modal_error = tostring(err)
+    return
+  end
+
+  close_modal()
+  state.active_tab = count
+  state.tab_offset = math.max(0, count - 5)
+  state.saved_page = 1
+  refresh_saved()
+
+  if pending then
+    local ok, message = add_track_by_index(count, pending)
+    state.status = ok and ("Lista " .. name .. " creada · " .. message) or
+      ("Lista " .. name .. " creada · " .. message)
+  else
+    state.status = "Lista creada: " .. name
+  end
+end
+
+local function scroll_details(delta)
+  if state.modal ~= "details" then
+    return
+  end
+  state.modal_scroll = math.max(0, math.min(state.modal_max_scroll,
+    state.modal_scroll + delta))
 end
 
 local function open_import()
@@ -486,8 +704,8 @@ local function confirm_import()
   end
 
   state.exported_count = total
-  state.saved_entries = Exporter.load()
   state.saved_page = 1
+  refresh_saved()
   close_import()
   state.status = "Importadas (" .. #entries .. ") · total " .. total .. " guardadas"
 end
@@ -570,8 +788,8 @@ local function handle_action(action)
   elseif action:match("^list_toggle_%d+$") then
     toggle_list_track(tonumber(action:sub(13)))
   elseif action:match("^list_stop_%d+$") then
-    local index = tonumber(action:sub(11))
-    if state.list_playing and state.list_index == index then
+    local index = global_index(tonumber(action:sub(11)))
+    if index and state.list_playing and state.list_index == index then
       stop_list(true)
     end
   elseif action == "list_play_all" then
@@ -582,6 +800,62 @@ local function handle_action(action)
     list_step(-1)
   elseif action == "list_next" then
     list_step(1)
+  elseif action == "new_playlist" then
+    open_new_playlist_modal(nil)
+  elseif action == "new_playlist_confirm" then
+    confirm_new_playlist()
+  elseif action == "new_playlist_cancel" then
+    close_modal()
+  elseif action == "details_copy" then
+    local entry = state.modal_target_index and state.saved_entries[state.modal_target_index]
+    if entry then
+      local ok, err = Exporter.copy_details(entry)
+      state.status = ok and "Detalles copiados al portapapeles." or
+        ("No se pudo copiar: " .. tostring(err))
+    end
+  elseif action == "details_close" then
+    close_modal()
+  elseif action == "details_scroll_up" then
+    scroll_details(-2)
+  elseif action == "details_scroll_down" then
+    scroll_details(2)
+  elseif action:match("^details_%d+$") then
+    open_details(tonumber(action:sub(9)))
+  elseif action == "add_create" then
+    local pending = state.pending_add_index or state.modal_target_index
+    close_modal()
+    open_new_playlist_modal(pending)
+  elseif action == "add_cancel" then
+    close_modal()
+  elseif action == "add_prev" then
+    state.modal_list_offset = math.max(0, state.modal_list_offset - 1)
+  elseif action == "add_next" then
+    state.modal_list_offset = math.min(math.max(0, #state.playlists - 5),
+      state.modal_list_offset + 1)
+  elseif action:match("^add_playlist_%d+$") then
+    local playlist_index = state.modal_list_offset + tonumber(action:sub(14))
+    if state.modal_target_index then
+      local ok, message = add_track_by_index(playlist_index, state.modal_target_index)
+      state.status = ok and message or ("No se pudo añadir: " .. message)
+      if ok then
+        close_modal()
+      end
+    end
+  elseif action:match("^playlist_toggle_%d+$") then
+    local slot = tonumber(action:sub(17))
+    if state.active_tab == 0 then
+      open_add_modal(slot)
+    else
+      remove_saved_from_playlist(slot)
+    end
+  elseif action == "tab_all" then
+    switch_tab(0)
+  elseif action == "tab_prev" then
+    state.tab_offset = math.max(0, state.tab_offset - 1)
+  elseif action == "tab_next" then
+    state.tab_offset = math.min(math.max(0, #state.playlists - 6), state.tab_offset + 1)
+  elseif action:match("^tab_playlist_%d+$") then
+    switch_tab(state.tab_offset + tonumber(action:sub(14)))
   elseif action == "import" then
     open_import()
   elseif action == "import_confirm" then
@@ -597,7 +871,7 @@ local function handle_action(action)
   elseif action == "page_prev" then
     state.saved_page = math.max(1, state.saved_page - 1)
   elseif action == "page_next" then
-    local total_pages = math.max(1, math.ceil(#state.saved_entries / 5))
+    local total_pages = math.max(1, math.ceil(#state.saved_items / 5))
     state.saved_page = math.min(total_pages, state.saved_page + 1)
   elseif action:match("^load_%d+$") then
     load_saved(tonumber(action:sub(6)))
@@ -619,8 +893,7 @@ local function handle_action(action)
 end
 
 function love.load()
-  state.saved_entries = Exporter.load()
-  state.exported_count = #state.saved_entries
+  refresh_saved()
   Screen.update()
   UI.load()
   refresh(false)
@@ -676,6 +949,14 @@ function love.draw()
 end
 
 function love.textinput(text)
+  if state.modal == "new_playlist" then
+    local cleaned = text:gsub("\r", "")
+    if cleaned ~= "" and #state.modal_buffer < MAX_NAME then
+      state.modal_buffer = state.modal_buffer .. cleaned:sub(1, MAX_NAME - #state.modal_buffer)
+    end
+    return
+  end
+
   if state.view == "import" then
     local cleaned = text:gsub("\r", "")
     if cleaned ~= "" and #state.import_buffer < MAX_IMPORT then
@@ -695,6 +976,21 @@ function love.textinput(text)
 end
 
 function love.keypressed(key)
+  if state.modal then
+    if state.modal == "new_playlist" and key == "backspace" then
+      state.modal_buffer = state.modal_buffer:sub(1, -2)
+    elseif key == "enter" or key == "keypad enter" then
+      if state.modal == "new_playlist" then
+        confirm_new_playlist()
+      else
+        close_modal()
+      end
+    elseif key == "escape" then
+      close_modal()
+    end
+    return
+  end
+
   if state.editing then
     if key == "backspace" then
       state.edit_buffer = state.edit_buffer:sub(1, -2)
@@ -765,7 +1061,7 @@ function love.mousepressed(x, y, button)
   -- toque, y el orden no es estable: filtrar por tiempo deja pasar duplicados.
   -- Cada plataforma usa un solo canal de entrada.
   if button == 1 and not touch_device then
-    handle_action(UI.action_at(x, y, state.view))
+    handle_action(UI.action_at(x, y, state.view, state.modal))
   end
 end
 
@@ -773,11 +1069,15 @@ function love.touchpressed(id, x, y)
   if not touch_device then
     return
   end
-  handle_action(UI.action_at(x, y, state.view))
+  handle_action(UI.action_at(x, y, state.view, state.modal))
 end
 
 function love.resize(width, height)
   Screen.update()
+end
+
+function love.wheelmoved(x, y)
+  scroll_details(y * 3)
 end
 
 function love.focus(focused)
